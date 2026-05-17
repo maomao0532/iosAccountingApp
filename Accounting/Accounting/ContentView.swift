@@ -156,6 +156,7 @@ private struct StatisticsView: View {
     @State private var editingEntry: LedgerEntry?
     @State private var isSelectingDetails = false
     @State private var selectedDetailIDs = Set<UUID>()
+    @State private var detailFilter: DetailFilter = .all
 
     private var range: DateInterval {
         let calendar = Calendar.current
@@ -173,11 +174,20 @@ private struct StatisticsView: View {
         }
     }
 
-    private var filteredEntries: [LedgerEntry] { store.entries(in: range) }
+    private var rangeEntries: [LedgerEntry] { store.entries(in: range) }
+    private var filteredEntries: [LedgerEntry] {
+        rangeEntries.filter { detailFilter.matches($0) }
+    }
     private var income: Decimal { store.total(for: .income, in: range) }
     private var expense: Decimal { store.total(for: .expense, in: range) }
     private var categorySpending: [CategorySpend] {
-        ExpenseCategory.summary(from: filteredEntries)
+        ExpenseCategory.summary(from: rangeEntries)
+    }
+
+    private func selectDetailFilter(_ filter: DetailFilter) {
+        detailFilter = filter
+        selectedDetailIDs.removeAll()
+        isSelectingDetails = false
     }
 
     var body: some View {
@@ -212,8 +222,10 @@ private struct StatisticsView: View {
                 }
 
                 Section {
-                    if filteredEntries.isEmpty {
+                    if rangeEntries.isEmpty {
                         ContentUnavailableView("这个时间段没有账目", systemImage: "calendar")
+                    } else if filteredEntries.isEmpty {
+                        ContentUnavailableView("没有匹配的明细", systemImage: "line.3.horizontal.decrease.circle")
                     } else {
                         ForEach(filteredEntries) { entry in
                             if isSelectingDetails {
@@ -252,23 +264,38 @@ private struct StatisticsView: View {
                     HStack {
                         Text("明细")
                         Spacer()
-                        if !filteredEntries.isEmpty {
-                            if isSelectingDetails {
-                                Button("删除") {
-                                    store.delete(ids: selectedDetailIDs)
-                                    selectedDetailIDs.removeAll()
-                                    isSelectingDetails = false
+                        if !rangeEntries.isEmpty {
+                            Menu {
+                                ForEach(DetailFilter.allCases) { filter in
+                                    Button {
+                                        selectDetailFilter(filter)
+                                    } label: {
+                                        Label(filter.rawValue, systemImage: filter == detailFilter ? "checkmark" : filter.iconName)
+                                    }
                                 }
-                                .disabled(selectedDetailIDs.isEmpty)
-                                .foregroundStyle(selectedDetailIDs.isEmpty ? Color.secondary : Color.red)
+                            } label: {
+                                Label(detailFilter.rawValue, systemImage: "line.3.horizontal.decrease.circle")
+                                    .labelStyle(.titleAndIcon)
+                            }
 
-                                Button("取消") {
-                                    selectedDetailIDs.removeAll()
-                                    isSelectingDetails = false
-                                }
-                            } else {
-                                Button("选择") {
-                                    isSelectingDetails = true
+                            if !filteredEntries.isEmpty {
+                                if isSelectingDetails {
+                                    Button("删除") {
+                                        store.delete(ids: selectedDetailIDs)
+                                        selectedDetailIDs.removeAll()
+                                        isSelectingDetails = false
+                                    }
+                                    .disabled(selectedDetailIDs.isEmpty)
+                                    .foregroundStyle(selectedDetailIDs.isEmpty ? Color.secondary : Color.red)
+
+                                    Button("取消") {
+                                        selectedDetailIDs.removeAll()
+                                        isSelectingDetails = false
+                                    }
+                                } else {
+                                    Button("选择") {
+                                        isSelectingDetails = true
+                                    }
                                 }
                             }
                         }
@@ -350,6 +377,67 @@ private enum ExpenseCategory: String, CaseIterable, Identifiable {
             return CategorySpend(category: category, amount: amount)
         }
         .sorted { $0.amount > $1.amount }
+    }
+}
+
+private enum DetailFilter: String, CaseIterable, Identifiable {
+    case all = "全部"
+    case income = "收入"
+    case food = "餐饮"
+    case shopping = "购物"
+    case transport = "交通"
+    case housing = "居住"
+    case entertainment = "娱乐"
+    case medical = "医疗"
+    case learning = "学习办公"
+    case social = "人情"
+    case other = "其他"
+
+    var id: String { rawValue }
+
+    var iconName: String {
+        switch self {
+        case .all: return "tray.full"
+        case .income: return "arrow.down.circle"
+        default: return "tag"
+        }
+    }
+
+    private var expenseCategory: ExpenseCategory? {
+        switch self {
+        case .all, .income:
+            return nil
+        case .food:
+            return .food
+        case .shopping:
+            return .shopping
+        case .transport:
+            return .transport
+        case .housing:
+            return .housing
+        case .entertainment:
+            return .entertainment
+        case .medical:
+            return .medical
+        case .learning:
+            return .learning
+        case .social:
+            return .social
+        case .other:
+            return .other
+        }
+    }
+
+    func matches(_ entry: LedgerEntry) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .income:
+            return entry.type == .income
+        default:
+            guard entry.type == .expense, let expenseCategory else { return false }
+            return ExpenseCategory.category(for: entry.note) == expenseCategory
+        }
     }
 }
 
@@ -676,8 +764,13 @@ private struct EntryRow: View {
                 .background(entry.channel.tint.opacity(0.12), in: Circle())
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(entry.note)
-                    .font(.body.weight(.medium))
+                HStack(spacing: 6) {
+                    Text(entry.note)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+
+                    EntryCategoryBadge(entry: entry)
+                }
                 Text("\(entry.channel.rawValue) · \(entry.date.ledgerText)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -690,6 +783,43 @@ private struct EntryRow: View {
                 .foregroundStyle(entry.type.tint)
         }
         .padding(.vertical, 6)
+    }
+}
+
+private struct EntryCategoryBadge: View {
+    var entry: LedgerEntry
+
+    private var title: String {
+        switch entry.type {
+        case .income:
+            return EntryType.income.rawValue
+        case .expense:
+            return ExpenseCategory.category(for: entry.note).rawValue
+        }
+    }
+
+    private var tint: Color {
+        switch entry.type {
+        case .income:
+            return entry.type.tint
+        case .expense:
+            return ExpenseCategory.category(for: entry.note).color
+        }
+    }
+
+    var body: some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.12), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(tint.opacity(0.35), lineWidth: 1)
+            }
     }
 }
 
